@@ -5,7 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -47,13 +47,14 @@ func main() {
 
 	client, err := newClient(token)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("Unable to create client", err)
+		return
 	}
 
 	ctx := context.Background()
 
 	start := time.Now()
-	log.Println("Running...")
+	slog.Info("Running...")
 	switch *action {
 	case "run":
 		client.Run(ctx, *org, *search, *assume)
@@ -66,8 +67,7 @@ func main() {
 	case "cleanup":
 		client.Cleanup(ctx, *org, *search, *assume, tfe.RunStatus(*stuckStatus))
 	}
-	elapsed := time.Since(start)
-	log.Println("Finished in", elapsed)
+	slog.Info(fmt.Sprintf("Finished in %fs", time.Since(start).Seconds()))
 }
 
 func newClient(token string) (*Client, error) {
@@ -93,8 +93,10 @@ func (c *Client) Run(ctx context.Context, org, search string, assume bool) error
 	var createList []*tfe.Workspace
 	for _, ws := range workspaces {
 		if ws.Permissions.CanQueueRun {
-			log.Println(org, ws.Name, "will start run")
+			slog.Info("can start", "workspace", ws.Name)
 			createList = append(createList, ws)
+		} else {
+			slog.Warn("missing permission", "workspace", ws.Name)
 		}
 	}
 
@@ -103,7 +105,7 @@ func (c *Client) Run(ctx context.Context, org, search string, assume bool) error
 			if run, err := c.createRun(ctx, ws); err != nil {
 				return err
 			} else {
-				log.Println("started", run.ID)
+				slog.Info("started", "runID", run.ID)
 			}
 		}
 	}
@@ -120,8 +122,7 @@ func (c *Client) Confirm(ctx context.Context, org, search string, assume bool) e
 
 	var confirmList []string
 	for _, ws := range workspaces {
-		if ws.CurrentRun.Permissions.CanApply && ws.CurrentRun.Actions.IsConfirmable {
-			log.Println(org, ws.Name, "will confirm", ws.CurrentRun.ID)
+		if c.canConfirm(ws.Name, ws.CurrentRun) {
 			confirmList = append(confirmList, ws.CurrentRun.ID)
 		}
 	}
@@ -142,8 +143,7 @@ func (c *Client) Discard(ctx context.Context, org, search string, assume bool) e
 
 	var discardList []string
 	for _, ws := range workspaces {
-		if ws.CurrentRun.Permissions.CanDiscard && ws.CurrentRun.Actions.IsDiscardable {
-			log.Println(org, ws.Name, "will discard", ws.CurrentRun.ID)
+		if c.canDiscard(ws.Name, ws.CurrentRun) {
 			discardList = append(discardList, ws.CurrentRun.ID)
 		}
 	}
@@ -164,8 +164,7 @@ func (c *Client) Cancel(ctx context.Context, org, search string, assume bool) er
 
 	var cancelList []string
 	for _, ws := range workspaces {
-		if ws.CurrentRun.Permissions.CanCancel && ws.CurrentRun.Actions.IsCancelable {
-			log.Println(org, ws.Name, "will cancel", ws.CurrentRun.ID)
+		if c.canCancel(ws.Name, ws.CurrentRun) {
 			cancelList = append(cancelList, ws.CurrentRun.ID)
 		}
 	}
@@ -202,25 +201,26 @@ func (c *Client) Cleanup(ctx context.Context, org, search string, assume bool, s
 				if idx == 0 {
 					switch run.Status {
 					case stuckStatus:
-						if ws.AutoApply && run.Permissions.CanApply && run.Actions.IsConfirmable {
-							log.Println(org, ws.Name, "will confirm", run.ID)
-							confirmList = append(confirmList, run.ID)
+						if ws.AutoApply {
+							if c.canConfirm(ws.Name, run) {
+								confirmList = append(confirmList, run.ID)
+							}
+						} else {
+							slog.Info("skipping, autoapply disabled", "workspace", ws.Name, "runID", run.ID)
 						}
 					case tfe.RunPending:
 						// This one should queue automatically after cleanup
-						log.Println(org, ws.Name, "will skip", run.ID)
+						slog.Info("will trigger automatically", "workspace", ws.Name, "runID", run.ID)
 						skipList = append(skipList, run.ID)
 					}
 				} else {
 					switch run.Status {
 					case stuckStatus:
-						if run.Permissions.CanDiscard && run.Actions.IsDiscardable {
-							log.Println(org, ws.Name, "will discard", run.ID)
+						if c.canDiscard(ws.Name, run) {
 							discardList = append(discardList, run.ID)
 						}
 					case tfe.RunPending:
-						if run.Permissions.CanCancel && run.Actions.IsCancelable {
-							log.Println(org, ws.Name, "will cancel", run.ID)
+						if c.canCancel(ws.Name, run) {
 							cancelList = append(cancelList, run.ID)
 						}
 					}
@@ -285,6 +285,21 @@ func (c *Client) createRun(ctx context.Context, workspace *tfe.Workspace) (*tfe.
 	return c.Runs.Create(ctx, opts)
 }
 
+func (c *Client) canConfirm(name string, run *tfe.Run) bool {
+	if run.Permissions.CanApply {
+		if run.Actions.IsConfirmable {
+			slog.Info("can confirm", "workspace", name, "runID", run.ID)
+			return true
+		} else {
+			slog.Warn("not confirmable", "workspace", name, "runID", run.ID)
+			return false
+		}
+	}
+
+	slog.Warn("missing permission", "workspace", name, "runID", run.ID)
+	return false
+}
+
 func (c *Client) confirmRuns(ctx context.Context, runIDs []string) error {
 	for _, runID := range runIDs {
 		if err := c.confirmRun(ctx, runID); err != nil {
@@ -295,8 +310,23 @@ func (c *Client) confirmRuns(ctx context.Context, runIDs []string) error {
 }
 
 func (c *Client) confirmRun(ctx context.Context, runID string) error {
-	log.Println("confirming", runID)
+	slog.Info("confirming", "runID", runID)
 	return c.Runs.Apply(ctx, runID, tfe.RunApplyOptions{})
+}
+
+func (c *Client) canCancel(name string, run *tfe.Run) bool {
+	if run.Permissions.CanCancel {
+		if run.Actions.IsCancelable {
+			slog.Info("can cancel", "workspace", name, "runID", run.ID)
+			return true
+		} else {
+			slog.Warn("not cancelable", "workspace", name, "runID", run.ID)
+			return false
+		}
+	}
+
+	slog.Warn("missing permission", "workspace", name, "runID", run.ID)
+	return false
 }
 
 func (c *Client) cancelRuns(ctx context.Context, runIDs []string) error {
@@ -309,8 +339,23 @@ func (c *Client) cancelRuns(ctx context.Context, runIDs []string) error {
 }
 
 func (c *Client) cancelRun(ctx context.Context, runID string) error {
-	log.Println("canceling", runID)
+	slog.Info("canceling", "runID", runID)
 	return c.Runs.Cancel(ctx, runID, tfe.RunCancelOptions{})
+}
+
+func (c *Client) canDiscard(name string, run *tfe.Run) bool {
+	if run.Permissions.CanDiscard {
+		if run.Actions.IsDiscardable {
+			slog.Info("can discard", "workspace", name, "runID", run.ID)
+			return true
+		} else {
+			slog.Warn("not discardable", "workspace", name, "runID", run.ID)
+			return false
+		}
+	}
+
+	slog.Warn("missing permission", "workspace", name, "runID", run.ID)
+	return false
 }
 
 func (c *Client) discardRuns(ctx context.Context, runIDs []string) error {
@@ -323,7 +368,7 @@ func (c *Client) discardRuns(ctx context.Context, runIDs []string) error {
 }
 
 func (c *Client) discardRun(ctx context.Context, runID string) error {
-	log.Println("discarding", runID)
+	slog.Info("discarding", "runID", runID)
 	return c.Runs.Discard(ctx, runID, tfe.RunDiscardOptions{})
 }
 
@@ -356,7 +401,7 @@ func (c *Client) getWorkspaces(ctx context.Context, org, search string) ([]*tfe.
 		if wsList.NextPage > n {
 			n = wsList.NextPage
 		} else {
-			log.Printf("Found %d Workspace(s)", len(workspaces))
+			slog.Info(fmt.Sprintf("Found %d Workspace(s)", len(workspaces)))
 			return workspaces, nil
 		}
 	}
@@ -367,9 +412,9 @@ func confirm(changeCount int, assume bool) bool {
 		if assume || confirmPrompt() {
 			return true
 		}
-		log.Println("Action(s) aborted")
+		slog.Info("Action(s) aborted")
 	} else {
-		log.Println("Nothing to do")
+		slog.Info("Nothing to do")
 	}
 
 	return false
