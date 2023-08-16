@@ -32,6 +32,7 @@ func main() {
 	action := flag.String("action", "", "Action to do on the Workspace(s) [run|confirm|discard|cancel|cleanup] (required)")
 	assume := flag.Bool("assume-yes", false, "Run without prompting for confirmation (optional)")
 	stuckStatus := flag.String("stuck-status", "cost_estimated", "Where the Run waits for confirmation (optional; for cleanup only)")
+	erroredOnly := flag.Bool("errored-only", false, "Only attempt the action if the current Run has Errored (optional; for run only)")
 
 	flag.Parse()
 
@@ -57,7 +58,7 @@ func main() {
 	slog.Info("Running...")
 	switch *action {
 	case "run":
-		client.Run(ctx, *org, *search, *assume)
+		client.Run(ctx, *org, *search, *assume, *erroredOnly)
 	case "confirm":
 		client.Confirm(ctx, *org, *search, *assume)
 	case "discard":
@@ -84,7 +85,7 @@ func newClient(token string) (*Client, error) {
 }
 
 // Start a new Run if possible
-func (c *Client) Run(ctx context.Context, org, search string, assume bool) error {
+func (c *Client) Run(ctx context.Context, org, search string, assume, erroredOnly bool) error {
 	workspaces, err := c.getWorkspaces(ctx, org, search)
 	if err != nil {
 		return err
@@ -92,11 +93,13 @@ func (c *Client) Run(ctx context.Context, org, search string, assume bool) error
 
 	var createList []*tfe.Workspace
 	for _, ws := range workspaces {
-		if ws.Permissions.CanQueueRun {
-			slog.Info("can start", "workspace", ws.Name)
-			createList = append(createList, ws)
-		} else {
-			slog.Warn("missing permission", "workspace", ws.Name)
+		if !erroredOnly || (erroredOnly && ws.CurrentRun.Status == tfe.RunErrored) {
+			if ws.Permissions.CanQueueRun {
+				slog.Info("can start", "workspace", ws.Name)
+				createList = append(createList, ws)
+			} else {
+				slog.Warn("missing permission", "workspace", ws.Name)
+			}
 		}
 	}
 
