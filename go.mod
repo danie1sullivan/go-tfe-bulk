@@ -1,6 +1,6 @@
 module github.com/danie1sullivan/go-tfe-bulk
 
-go 1.18
+go 1.21.0
 
 require (
 	github.com/hashicorp/go-tfe v1.10.0
