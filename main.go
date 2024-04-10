@@ -29,7 +29,7 @@ func main() {
 
 	org := flag.String("org", "", "Terraform Cloud organization name (required)")
 	search := flag.String("search", "", "Workspace search (optional)")
-	action := flag.String("action", "", "Action to do on the Workspace(s) [run|confirm|discard|cancel|cleanup] (required)")
+	action := flag.String("action", "", "Action to do on the Workspace(s) [run|confirm|discard|cancel|cleanup|echo] (required)")
 	assume := flag.Bool("assume-yes", false, "Run without prompting for confirmation (optional)")
 	stuckStatus := flag.String("stuck-status", "cost_estimated", "Where the Run waits for confirmation (optional; for cleanup only)")
 	erroredOnly := flag.Bool("errored-only", false, "Only attempt the action if the current Run has Errored (optional; for run only)")
