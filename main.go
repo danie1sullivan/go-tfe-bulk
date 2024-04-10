@@ -14,7 +14,7 @@ import (
 	"golang.org/x/exp/slices"
 )
 
-var ACTIONS = []string{"run", "confirm", "discard", "cancel", "cleanup"}
+var ACTIONS = []string{"run", "confirm", "discard", "cancel", "cleanup", "echo"}
 
 type Client struct {
 	*tfe.Client
@@ -67,6 +67,8 @@ func main() {
 		client.Cancel(ctx, *org, *search, *assume)
 	case "cleanup":
 		client.Cleanup(ctx, *org, *search, *assume, tfe.RunStatus(*stuckStatus))
+	case "echo":
+		client.Echo(ctx, *org, *search)
 	}
 	slog.Info(fmt.Sprintf("Finished in %fs", time.Since(start).Seconds()))
 }
@@ -82,6 +84,20 @@ func newClient(token string) (*Client, error) {
 	}
 
 	return &Client{client}, nil
+}
+
+// Print out the Workspace(s)
+func (c *Client) Echo(ctx context.Context, org, search string) error {
+	workspaces, err := c.getWorkspaces(ctx, org, search)
+	if err != nil {
+		return err
+	}
+
+	for _, ws := range workspaces {
+		slog.Info("found", "workspace", ws.Name, "runID", ws.CurrentRun.ID, "status", ws.CurrentRun.Status)
+	}
+
+	return nil
 }
 
 // Start a new Run if possible
